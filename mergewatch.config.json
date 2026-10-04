@@ -1,0 +1,6 @@
+{
+  "baseBranch": "main",
+  "webhookUrl": "",
+  "useLlmMessages": false,
+  "stateFilePath": ".mergewatch-state.json"
+}
