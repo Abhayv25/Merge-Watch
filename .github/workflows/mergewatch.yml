@@ -1,11 +1,10 @@
-name: Mergewatch
+name: Mergewatch (manual run)
 
+# The scheduled run now lives on AWS Lambda (see infra/). GitHub Actions'
+# cron is best-effort: on this repo a 15-minute schedule fired 5 times in
+# about 18 hours. This workflow stays for one-off manual checks.
 on:
-  schedule:
-    # Runs every 15 minutes. Cron is in UTC. Adjust once it's working --
-    # more frequent means faster warnings, less frequent means fewer Actions minutes used.
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab, useful while testing
+  workflow_dispatch: {}
 
 jobs:
   check-for-collisions:
@@ -14,14 +13,13 @@ jobs:
       - name: Check out full history
         uses: actions/checkout@v4
         with:
-          # IMPORTANT: git merge-tree needs real commit history to find a common
-          # ancestor between branches. A shallow clone (the default) will break this.
+          # git merge-tree needs real history to find a common ancestor.
           fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Install dependencies
@@ -30,8 +28,5 @@ jobs:
       - name: Run Mergewatch
         run: python -m src.main
         env:
-          # GITHUB_TOKEN is provided automatically by Actions -- no secret to create for this one.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Add this as a repo secret (Settings -> Secrets and variables -> Actions)
-          # once you're ready to actually post notifications.
           MERGEWATCH_WEBHOOK_URL: ${{ secrets.MERGEWATCH_WEBHOOK_URL }}

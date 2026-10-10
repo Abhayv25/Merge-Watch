@@ -6,3 +6,10 @@ venv/
 .mergewatch-state.json
 .env
 fixtures/conflict-repo/
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars
