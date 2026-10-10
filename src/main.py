@@ -1,29 +1,28 @@
 """
-Orchestrates one full run: find active branches, narrow to the files more
-than one of them touched, check each contested pair for a real conflict,
-and notify on anything new. This is the entry point GitHub Actions runs.
+Command-line entry point: checks the repository in the current directory.
+Used for local runs and the manual GitHub Actions workflow. The scheduled
+production run is the AWS Lambda in lambda_handler.py.
+
+    export GITHUB_REPOSITORY=owner/repo
+    python3 -m src.main
 """
 
-import itertools
+import json
 import os
+import sys
 
 from dotenv import load_dotenv
 
+from .checker import run_check
 from .config import load_config
-from .merge_check import check_merge_conflict
-from .notifier import CollisionNotification, build_message, post_notification
-from .overlap import find_overlapping_files
-from .poller import fetch_active_branches
-from .state import (
-    build_collision_key,
-    has_been_notified,
-    load_state,
-    record_notification,
-    save_state,
-)
+from .gitcmd import GitError, run_git
+from .notifier import post_notification
+from .poller import GitHubApiError, fetch_active_branches
+from .state import FileStateStore
+from .workspace import github_clone_url, sync_refs
 
 
-def main() -> None:
+def main() -> int:
     load_dotenv()
 
     repo_path = os.getcwd()
@@ -32,47 +31,38 @@ def main() -> None:
     repo_full_name = os.environ.get("GITHUB_REPOSITORY", "")
     if "/" not in repo_full_name:
         print("GITHUB_REPOSITORY is not set (expected 'owner/repo'). Nothing to do.")
-        return
+        return 1
 
     owner, repo = repo_full_name.split("/", 1)
     github_token = os.environ.get("GITHUB_TOKEN", "")
+    webhook_url = os.environ.get("MERGEWATCH_WEBHOOK_URL") or config.webhook_url
 
-    branches = fetch_active_branches(owner, repo, github_token)
-    if len(branches) < 2:
-        print("Fewer than 2 active branches -- nothing can collide.")
-        return
+    try:
+        branches = fetch_active_branches(owner, repo, github_token)
+        if len(branches) < 2:
+            print("Fewer than 2 active branches -- nothing can collide.")
+            return 0
+        # Fetch every PR head (including forks) so the check never depends on
+        # which branches happen to exist locally.
+        run_git(repo_path, ["rev-parse", "--git-dir"])
+        base_ref, branches = sync_refs(
+            repo_path, github_clone_url(owner, repo), github_token, config.base_branch, branches
+        )
+    except (GitHubApiError, GitError) as e:
+        print(f"Mergewatch could not run: {e}", file=sys.stderr)
+        return 1
 
-    overlaps = find_overlapping_files(repo_path, config.base_branch, branches)
-    state = load_state(config.state_file_path)
-
-    for overlap in overlaps:
-        for branch_a, branch_b in itertools.combinations(overlap.branches, 2):
-            try:
-                key = build_collision_key(
-                    overlap.file, branch_a.branch_name, branch_b.branch_name
-                )
-                if has_been_notified(state, key):
-                    continue
-
-                result = check_merge_conflict(repo_path, branch_a, branch_b)
-                if not result.has_conflict:
-                    continue
-
-                notification = CollisionNotification(
-                    file=overlap.file,
-                    branch_a=branch_a,
-                    branch_b=branch_b,
-                    conflict=result,
-                )
-                message = build_message(notification, config.use_llm_messages)
-                post_notification(config.webhook_url, message)
-
-                state = record_notification(state, key)
-            except Exception as e:
-                print(f"Skipping {branch_a.branch_name} <-> {branch_b.branch_name}: {e}")
-
-    save_state(config.state_file_path, state)
+    summary = run_check(
+        repo_path,
+        base_ref,
+        branches,
+        FileStateStore(config.state_file_path),
+        notify=lambda message: post_notification(webhook_url, message),
+        use_llm_messages=config.use_llm_messages,
+    )
+    print(json.dumps(summary.to_dict()))
+    return 1 if summary.errors else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
