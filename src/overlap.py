@@ -4,10 +4,10 @@ active branch, so merge_check.py only has to run its real (more expensive)
 simulation on pairs that could plausibly conflict.
 """
 
-import subprocess
 from dataclasses import dataclass
 from typing import Dict, List
 
+from .gitcmd import run_git
 from .poller import ActiveBranch
 
 
@@ -17,23 +17,19 @@ class FileOverlap:
     branches: List[ActiveBranch]
 
 
-def get_changed_files(repo_path: str, base_branch: str, branch_name: str) -> List[str]:
-    result = subprocess.run(
-        ["git", "diff", f"{base_branch}...{branch_name}", "--name-only"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-    )
+def get_changed_files(repo_path: str, base_ref: str, head_sha: str) -> List[str]:
+    """Files changed on head_sha since it diverged from base_ref."""
+    result = run_git(repo_path, ["diff", "--name-only", f"{base_ref}...{head_sha}"])
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def find_overlapping_files(
-    repo_path: str, base_branch: str, branches: List[ActiveBranch]
+    repo_path: str, base_ref: str, branches: List[ActiveBranch]
 ) -> List[FileOverlap]:
     touched_by: Dict[str, List[ActiveBranch]] = {}
 
     for branch in branches:
-        for file in get_changed_files(repo_path, base_branch, branch.branch_name):
+        for file in get_changed_files(repo_path, base_ref, branch.head_sha):
             touched_by.setdefault(file, []).append(branch)
 
     return [

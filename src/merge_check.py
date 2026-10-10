@@ -5,11 +5,16 @@ Nothing here is a guess -- git does the actual merge, in memory, and we
 just read the result.
 """
 
-import subprocess
 from dataclasses import dataclass, field
 from typing import List
 
+from .gitcmd import run_git
 from .poller import ActiveBranch
+
+# git merge-tree --write-tree exits 0 for a clean merge and 1 for a merge
+# with conflicts. Anything else is a real error (bad ref, missing objects).
+_CLEAN = 0
+_CONFLICTED = 1
 
 
 @dataclass
@@ -21,20 +26,34 @@ class ConflictResult:
 def check_merge_conflict(
     repo_path: str, branch_a: ActiveBranch, branch_b: ActiveBranch
 ) -> ConflictResult:
-    result = subprocess.run(
-        ["git", "merge-tree", "--write-tree", branch_a.branch_name, branch_b.branch_name],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
+    # Compare commit SHAs, not branch names: in a fresh clone (GitHub Actions,
+    # Lambda) a PR's branch only exists as origin/<name> or a fetched pull
+    # ref, never as a local branch, and PRs from forks have no branch in this
+    # repository at all. Branch names here made every check fail silently.
+    #
+    # merge-tree exits 1 both for "conflict" and for "no such commit", so
+    # confirm both commits exist first; otherwise a bad ref reads as a conflict.
+    for sha in (branch_a.head_sha, branch_b.head_sha):
+        run_git(repo_path, ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"])
+
+    result = run_git(
+        repo_path,
+        ["merge-tree", "--write-tree", "--name-only", branch_a.head_sha, branch_b.head_sha],
+        ok_codes=(_CLEAN, _CONFLICTED),
     )
 
-    conflicting_files = [
-        line.split(" in ", 1)[1].strip()
-        for line in result.stdout.splitlines()
-        if line.startswith("CONFLICT") and " in " in line
-    ]
+    if result.returncode == _CLEAN:
+        return ConflictResult(has_conflict=False)
+
+    # Output: the merged tree's OID, then one conflicted path per line, then
+    # a blank line, then informational messages.
+    conflicting_files = []
+    for line in result.stdout.splitlines()[1:]:
+        if not line.strip():
+            break
+        conflicting_files.append(line.strip())
 
     return ConflictResult(
-        has_conflict=len(conflicting_files) > 0,
-        conflicting_files=conflicting_files,
+        has_conflict=True,
+        conflicting_files=sorted(set(conflicting_files)),
     )

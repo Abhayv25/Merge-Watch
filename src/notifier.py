@@ -72,13 +72,24 @@ def build_message(notification: CollisionNotification, use_llm: bool) -> str:
     return _template_message(notification)
 
 
+class NotificationError(RuntimeError):
+    pass
+
+
 def post_notification(webhook_url: str, message: str) -> None:
+    """
+    Sends the message to a Discord or Slack webhook, or prints it when no
+    webhook is configured. Raises NotificationError if delivery fails, so the
+    caller does not record the conflict as notified when nobody was told.
+    """
     if not webhook_url:
         print(message)
         return
 
+    # Discord reads "content", Slack reads "text"; sending both works for either.
+    payload = {"content": message, "text": message}
     try:
-        requests.post(webhook_url, json={"content": message}, timeout=10)
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        response.raise_for_status()
     except requests.RequestException as e:
-        print(f"Failed to send notification, printing instead: {e}")
-        print(message)
+        raise NotificationError(f"Webhook delivery failed: {e}") from e

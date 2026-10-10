@@ -9,6 +9,10 @@ from typing import List
 import requests
 
 
+class GitHubApiError(RuntimeError):
+    pass
+
+
 @dataclass
 class ActiveBranch:
     branch_name: str
@@ -18,6 +22,11 @@ class ActiveBranch:
 
 
 def fetch_active_branches(owner: str, repo: str, github_token: str) -> List[ActiveBranch]:
+    """
+    Raises GitHubApiError if the API can't be reached. Returning an empty list
+    instead would look exactly like "no open PRs", so an expired token or a
+    GitHub outage would never be noticed.
+    """
     headers = {"Accept": "application/vnd.github+json"}
     if github_token:
         headers["Authorization"] = f"Bearer {github_token}"
@@ -40,7 +49,6 @@ def fetch_active_branches(owner: str, repo: str, github_token: str) -> List[Acti
 
             url = response.links.get("next", {}).get("url")
     except requests.RequestException as e:
-        print(f"Failed to fetch open pull requests for {owner}/{repo}: {e}")
-        return []
+        raise GitHubApiError(f"Failed to fetch open pull requests for {owner}/{repo}: {e}") from e
 
     return branches
